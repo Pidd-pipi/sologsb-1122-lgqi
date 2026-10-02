@@ -5,9 +5,18 @@ import { ElMessage } from 'element-plus';
 import { useFaceStore } from '../stores/faceStore';
 import { useGradeStore } from '../stores/gradeStore';
 import { useJointStore } from '../stores/jointStore';
+import { useRevisionStore } from '../stores/revisionStore';
 import { useGradeCalc } from '../hooks/useGradeCalc';
 import GradeTag from '../components/common/GradeTag.vue';
-import { GROUNDWATERS, GRADE_SUPPORT, ROCK_GRADES, type Groundwater, type RockGrade } from '../types/grade';
+import {
+  GROUNDWATERS,
+  GRADE_STATUS_TEXT,
+  GRADE_SUPPORT,
+  ROCK_GRADES,
+  type GradeStatus,
+  type Groundwater,
+  type RockGrade,
+} from '../types/grade';
 import { attitudeText, estimateJv, formatChainage } from '../utils/geoMath';
 
 const route = useRoute();
@@ -15,12 +24,16 @@ const router = useRouter();
 const faceStore = useFaceStore();
 const gradeStore = useGradeStore();
 const jointStore = useJointStore();
+const revisionStore = useRevisionStore();
 
 const faceId = computed(() => String(route.params.faceId ?? ''));
 const face = computed(() => faceStore.byId(faceId.value));
 const joints = computed(() => jointStore.byFace(faceId.value));
 const history = computed(() => gradeStore.byFace(faceId.value));
-const previous = computed(() => history.value[0]);
+/** 比对基准只取有效判定，已失效/待复核的不参与 */
+const previous = computed(() => gradeStore.confirmedByFace(faceId.value)[0]);
+/** 修订重算进行中：禁止再保存新判定，避免与重算结果冲突 */
+const activeRevision = computed(() => revisionStore.activeByFace(faceId.value));
 
 const { input, result, patch } = useGradeCalc(() => joints.value);
 const manual = ref(false);
@@ -29,8 +42,14 @@ const manualGrade = ref<RockGrade>('Ⅲ');
 const finalGrade = computed<RockGrade>(() => (manual.value ? manualGrade.value : result.value.grade));
 const finalSupport = computed(() => GRADE_SUPPORT[finalGrade.value]);
 
+const GRADE_STATUS_TAG: Record<GradeStatus, 'success' | 'info' | 'warning'> = {
+  confirmed: 'success',
+  stale: 'info',
+  pending_review: 'warning',
+};
+
 const compareText = computed(() => {
-  if (!previous.value) return '本掌子面尚无历史判定，保存后将成为首次记录';
+  if (!previous.value) return '本掌子面尚无有效历史判定，保存后将成为首次记录';
   const order = ROCK_GRADES;
   const delta = order.indexOf(finalGrade.value) - order.indexOf(previous.value.grade);
   if (delta === 0) return `与上循环级别一致（${previous.value.grade} 级）`;
@@ -52,6 +71,10 @@ async function save() {
     ElMessage.error('未找到该掌子面');
     return;
   }
+  if (activeRevision.value) {
+    ElMessage.warning('编录修订重算中，完成后再保存判定');
+    return;
+  }
   await gradeStore.addGrade({
     faceId: face.value.id,
     grade: finalGrade.value,
@@ -65,14 +88,23 @@ async function save() {
     correctedBq: result.value.correctedBq,
     supportSuggestion: finalSupport.value,
     manualAdjusted: manual.value,
+    status: 'confirmed',
+    faceRevision: face.value.revision,
   });
   ElMessage.success(`已保存 ${finalGrade.value} 级围岩判定`);
+}
+
+/** 待复核判定人工确认为有效 */
+async function confirmReview(id: string) {
+  await gradeStore.confirmReview(id);
+  ElMessage.success('已复核确认为有效判定');
 }
 
 onMounted(async () => {
   await faceStore.load();
   await jointStore.load();
   await gradeStore.load();
+  await revisionStore.load();
   if (face.value) {
     patch({
       rockStrength: face.value.rockStrength,
@@ -94,6 +126,14 @@ onMounted(async () => {
     </div>
 
     <el-alert v-if="!face" type="warning" :closable="false" show-icon title="未找到该掌子面" />
+    <el-alert
+      v-if="activeRevision"
+      type="warning"
+      :closable="false"
+      show-icon
+      :title="`修订 R${activeRevision.revisionNo} 正在重算关联判定`"
+      description="重算完成前暂停保存新判定；旧级别与支护建议已停用。"
+    />
 
     <div class="grid">
       <el-card shadow="never">
@@ -145,7 +185,8 @@ onMounted(async () => {
           </el-radio-group>
           <el-divider />
           <p class="muted">{{ compareText }}</p>
-          <el-button type="primary" @click="save">保存判定结果</el-button>
+          <el-button type="primary" :disabled="!!activeRevision" @click="save">保存判定结果</el-button>
+          <span v-if="activeRevision" class="hint">修订重算中，暂不可保存</span>
         </el-card>
 
         <el-card shadow="never">
@@ -171,6 +212,28 @@ onMounted(async () => {
             <el-table-column prop="groundwater" label="出水" width="120" />
             <el-table-column label="修正" width="80">
               <template #default="{ row }">{{ row.manualAdjusted ? '人工' : '自动' }}</template>
+            </el-table-column>
+            <el-table-column label="依据修订" width="90">
+              <template #default="{ row }">R{{ row.faceRevision }}</template>
+            </el-table-column>
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag :type="GRADE_STATUS_TAG[row.status as GradeStatus]" size="small">
+                  {{ GRADE_STATUS_TEXT[row.status as GradeStatus] }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="100">
+              <template #default="{ row }">
+                <el-button
+                  v-if="row.status === 'pending_review'"
+                  size="small"
+                  type="warning"
+                  @click="confirmReview(row.id)"
+                >
+                  复核确认
+                </el-button>
+              </template>
             </el-table-column>
           </el-table>
           <el-empty v-if="history.length === 0" description="尚无历史判定" :image-size="60" />

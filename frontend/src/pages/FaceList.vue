@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus';
 import { useFaceStore } from '../stores/faceStore';
 import { useGradeStore } from '../stores/gradeStore';
 import { useJointStore } from '../stores/jointStore';
+import { useRevisionStore } from '../stores/revisionStore';
 import { useFaceFilter } from '../hooks/useFaceFilter';
 import FaceCard from '../components/common/FaceCard.vue';
 import GradeTag from '../components/common/GradeTag.vue';
@@ -18,11 +19,13 @@ import {
 } from '../types/face';
 import { ROCK_GRADES, type RockGrade } from '../types/grade';
 import { formatChainage } from '../utils/geoMath';
+import { findOverlapFaces } from '../utils/revision';
 
 const router = useRouter();
 const faceStore = useFaceStore();
 const gradeStore = useGradeStore();
 const jointStore = useJointStore();
+const revisionStore = useRevisionStore();
 const { filters, result, options, gradeDistribution, reset } = useFaceFilter();
 
 const dialogVisible = ref(false);
@@ -84,6 +87,11 @@ async function submit() {
     error.value = '编录里程区间终点不能小于起点';
     return;
   }
+  const overlaps = findOverlapFaces(faceStore.items, '', form.mileageRange);
+  if (overlaps.length > 0) {
+    error.value = `编录区间与 ${overlaps.map((f) => f.faceNo).join('、')} 重叠，请调整`;
+    return;
+  }
   if (form.rockStrength <= 0 || form.rockStrength > 300) {
     error.value = '饱和抗压强度需在 0 ~ 300 MPa 之间';
     return;
@@ -98,6 +106,7 @@ onMounted(async () => {
   await faceStore.load();
   await gradeStore.load();
   await jointStore.load();
+  await revisionStore.load();
 });
 </script>
 
@@ -169,6 +178,7 @@ onMounted(async () => {
         :grade="row.grade"
         :joint-count="jointStore.byFace(row.face.id).length"
         :water-count="gradeStore.watersByFace(row.face.id).length"
+        :recalculating="!!revisionStore.activeByFace(row.face.id)"
         :footer="`编录时间 ${new Date(row.lastRecordedAt).toLocaleString('zh-CN')}`"
         @open="(id) => router.push(`/faces/${id}`)"
       />

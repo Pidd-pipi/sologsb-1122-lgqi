@@ -2,11 +2,12 @@ import Dexie, { type Table } from 'dexie';
 import type { TunnelFace } from '../types/face';
 import type { JointSet } from '../types/joint';
 import type { RockMassGrade } from '../types/grade';
+import type { FaceRevision } from '../types/revision';
 import type { WaterInflow } from '../types/water';
 import { newId } from './id';
 
 export const DB_NAME = 'gbtunnelface';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbtunnelface:db-version';
 
 class TunnelFaceDB extends Dexie {
@@ -14,6 +15,7 @@ class TunnelFaceDB extends Dexie {
   joints!: Table<JointSet, string>;
   grades!: Table<RockMassGrade, string>;
   waters!: Table<WaterInflow, string>;
+  revisions!: Table<FaceRevision, string>;
 
   constructor() {
     super(DB_NAME);
@@ -50,6 +52,36 @@ class TunnelFaceDB extends Dexie {
           .toCollection()
           .modify((row: any) => {
             if (row.chainage === undefined) row.chainage = 0;
+          });
+      });
+    this.version(3)
+      .stores({
+        faces: 'id, faceNo, chainage, lithology, excavationMethod, weathering, recordedAt, revision',
+        joints: 'id, faceId, setNo, dipDirection, dipAngle, fillMaterial',
+        grades: 'id, faceId, grade, judgedAt, bqValue, status',
+        waters: 'id, faceId, chainage, type, changeTrend',
+        revisions: 'id, faceId, status, createdAt',
+      })
+      .upgrade(async (tx) => {
+        // 旧数据补齐修订号
+        await tx
+          .table('faces')
+          .toCollection()
+          .modify((row: any) => {
+            if (row.revision === undefined) row.revision = 1;
+          });
+        const faceIds = new Set<string>(
+          (await tx.table('faces').toArray()).map((f: { id: string }) => f.id),
+        );
+        await tx
+          .table('grades')
+          .toCollection()
+          .modify((row: any) => {
+            if (row.faceRevision === undefined) row.faceRevision = 1;
+            // 无法对应来源掌子面的判定标为待复核，其余确认为有效
+            if (row.status === undefined) {
+              row.status = faceIds.has(row.faceId) ? 'confirmed' : 'pending_review';
+            }
           });
       });
   }
@@ -108,6 +140,7 @@ export async function ensureSeedData(): Promise<void> {
       attitude: { strike: 42, dipDirection: 132, dipAngle: 34 },
       recordedAt: now - 2 * day,
       geologist: '岑柏川',
+      revision: 1,
     },
     {
       id: face2,
@@ -122,6 +155,7 @@ export async function ensureSeedData(): Promise<void> {
       attitude: { strike: 48, dipDirection: 138, dipAngle: 28 },
       recordedAt: now - 6 * hour,
       geologist: '岑柏川',
+      revision: 1,
     },
   ];
 
@@ -200,6 +234,8 @@ export async function ensureSeedData(): Promise<void> {
       supportSuggestion: '系统锚杆（φ25，L=3.0 m，间距 1.0 m）+ 喷射混凝土 12 cm + 钢筋网',
       manualAdjusted: false,
       judgedAt: now - 2 * day,
+      status: 'confirmed',
+      faceRevision: 1,
     },
   ];
 

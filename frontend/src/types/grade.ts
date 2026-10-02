@@ -8,6 +8,20 @@ export type Groundwater = '干燥' | '潮湿' | '点滴状出水' | '线状出�
 
 export const GROUNDWATERS: Groundwater[] = ['干燥', '潮湿', '点滴状出水', '线状出水', '涌流状出水'];
 
+/**
+ * 判定状态：
+ * - confirmed：有效，可作为现行结论；
+ * - stale：编录修订后已失效，重算完成前详情/台账/支护建议不得使用；
+ * - pending_review：旧数据升级时无法对应来源掌子面，待人工复核。
+ */
+export type GradeStatus = 'confirmed' | 'stale' | 'pending_review';
+
+export const GRADE_STATUS_TEXT: Record<GradeStatus, string> = {
+  confirmed: '有效',
+  stale: '已失效',
+  pending_review: '待复核',
+};
+
 /** 围岩级别判定记录 */
 export interface RockMassGrade {
   id: string;
@@ -33,6 +47,10 @@ export interface RockMassGrade {
   /** 是否人工修正级别 */
   manualAdjusted: boolean;
   judgedAt: number;
+  /** 判定状态 */
+  status: GradeStatus;
+  /** 判定所依据的掌子面修订号 */
+  faceRevision: number;
 }
 
 export type RockMassGradeDraft = Omit<RockMassGrade, 'id' | 'judgedAt'>;
@@ -56,6 +74,34 @@ export const GRADE_SUPPORT: Record<RockGrade, string> = {
   'Ⅴ': '超前小导管（φ42，L=4.5 m，环向间距 0.4 m）+ 钢拱架（I18，间距 0.75 m）+ 喷射混凝土 25 cm',
   'Ⅵ': '超前管棚（φ108，L=20 m）+ 钢拱架（I20b，间距 0.5 m）+ 双层钢筋网 + 喷射混凝土 30 cm，必要时超前预注浆',
 };
+
+/** 出水状态 → 地下水修正系数 K1（简化取值） */
+export const GROUNDWATER_K1: Record<Groundwater, number> = {
+  干燥: 0,
+  潮湿: 0.05,
+  点滴状出水: 0.1,
+  线状出水: 0.18,
+  涌流状出水: 0.28,
+};
+
+/** 洞跨 → 主要软弱结构面修正系数 K2（简化取值） */
+export function spanK2(spanWidth: number): number {
+  if (spanWidth < 5) return 0;
+  if (spanWidth < 10) return 0.03;
+  if (spanWidth < 15) return 0.06;
+  if (spanWidth < 20) return 0.1;
+  return 0.15;
+}
+
+/** 由 [BQ] 映射围岩级别 */
+export function gradeFromBq(correctedBq: number): RockGrade {
+  if (correctedBq > 550) return 'Ⅰ';
+  if (correctedBq > 450) return 'Ⅱ';
+  if (correctedBq > 350) return 'Ⅲ';
+  if (correctedBq > 250) return 'Ⅳ';
+  if (correctedBq > 150) return 'Ⅴ';
+  return 'Ⅵ';
+}
 
 /** 由涌水量与出水状态给出建议措施 */
 export function waterMeasure(flow: number, type: string): string {

@@ -4,9 +4,12 @@ import { useRoute, useRouter } from 'vue-router';
 import { useFaceStore } from '../stores/faceStore';
 import { useGradeStore } from '../stores/gradeStore';
 import { useJointStore } from '../stores/jointStore';
+import { useRevisionStore } from '../stores/revisionStore';
 import { useGradeCalc } from '../hooks/useGradeCalc';
 import SketchCanvas from '../components/common/SketchCanvas.vue';
 import GradeTag from '../components/common/GradeTag.vue';
+import ReviseFaceDialog from '../components/common/ReviseFaceDialog.vue';
+import RevisionList from '../components/common/RevisionList.vue';
 import { attitudeText, formatChainage } from '../utils/geoMath';
 import { GRADE_SUPPORT } from '../types/grade';
 
@@ -15,13 +18,18 @@ const router = useRouter();
 const faceStore = useFaceStore();
 const jointStore = useJointStore();
 const gradeStore = useGradeStore();
+const revisionStore = useRevisionStore();
 
 const faceId = computed(() => String(route.params.id ?? ''));
 const face = computed(() => faceStore.byId(faceId.value));
 const joints = computed(() => jointStore.byFace(faceId.value));
-const grades = computed(() => gradeStore.byFace(faceId.value));
+/** 只取有效判定：已失效/待复核的不作为现行结论展示 */
+const grades = computed(() => gradeStore.confirmedByFace(faceId.value));
 const latest = computed(() => grades.value[0]);
 const previousGrade = computed(() => grades.value[1]);
+/** 进行中的修订：重算完成前详情停用旧级别与支护建议 */
+const activeRevision = computed(() => revisionStore.activeByFace(faceId.value));
+const reviseVisible = ref(false);
 
 const { result, patch } = useGradeCalc(() => joints.value);
 const segmentCount = ref(0);
@@ -47,6 +55,7 @@ onMounted(async () => {
   await faceStore.load();
   await jointStore.load();
   await gradeStore.load();
+  await revisionStore.load();
   if (face.value) {
     patch({ rockStrength: face.value.rockStrength, spanWidth: Number(face.value.faceSize.split('×')[0]) || 12 });
   }
@@ -57,10 +66,15 @@ onMounted(async () => {
   <div class="page">
     <div class="header">
       <h2>掌子面详情 · {{ face?.faceNo ?? '未找到' }}</h2>
-      <GradeTag v-if="latest" :grade="latest.grade" />
+      <el-tag v-if="activeRevision" type="warning">修订 R{{ activeRevision.revisionNo }} 重算中</el-tag>
+      <GradeTag v-else-if="latest" :grade="latest.grade" />
       <el-tag v-else type="info">未判定级别</el-tag>
       <el-tag type="info" effect="plain">节理 {{ joints.length }} 组</el-tag>
+      <el-tag v-if="face" type="info" effect="plain">修订 R{{ face.revision }}</el-tag>
       <div class="spacer" />
+      <el-button v-if="face" type="warning" :disabled="!!activeRevision" @click="reviseVisible = true">
+        修正编录
+      </el-button>
       <el-button type="primary" @click="router.push(`/faces/${faceId}/joints`)">节理录入</el-button>
       <el-button @click="router.push(`/faces/${faceId}/water`)">涌水记录</el-button>
       <el-button @click="router.push(`/grade/${faceId}`)">围岩级别判定</el-button>
@@ -68,6 +82,14 @@ onMounted(async () => {
     </div>
 
     <el-alert v-if="!face" type="warning" :closable="false" show-icon title="未找到该掌子面（可能已被删除）" />
+    <el-alert
+      v-if="activeRevision"
+      type="warning"
+      :closable="false"
+      show-icon
+      :title="`修订 R${activeRevision.revisionNo} 已提交，关联判定正在重算`"
+      description="重算完成前，本页级别与支护建议、掌子面台账均停用旧值；若重算失败将自动恢复原编录与已确认判定，可在下方修订记录中重试。"
+    />
 
     <div v-if="face" class="grid">
       <div class="left">
@@ -90,12 +112,19 @@ onMounted(async () => {
             <el-descriptions-item label="编录时间">
               {{ new Date(face.recordedAt).toLocaleString('zh-CN') }}
             </el-descriptions-item>
+            <el-descriptions-item label="最近修订">
+              {{ face.revisedAt ? new Date(face.revisedAt).toLocaleString('zh-CN') : '未修订' }}
+            </el-descriptions-item>
           </el-descriptions>
         </el-card>
 
         <el-card shadow="never">
           <template #header><strong>级别与支护</strong></template>
-          <div v-if="latest" class="grade-box">
+          <div v-if="activeRevision" class="grade-box">
+            <el-tag type="warning">重算中</el-tag>
+            <p class="muted">关联判定已失效，正在按修订后的编录重算；旧级别与支护建议已停用。</p>
+          </div>
+          <div v-else-if="latest" class="grade-box">
             <GradeTag :grade="latest.grade" />
             <span class="muted">[BQ] = {{ latest.correctedBq }}（BQ {{ latest.bqValue }}，修正 {{ latest.correction }}）</span>
             <p class="support">{{ latest.supportSuggestion || GRADE_SUPPORT[latest.grade] }}</p>
@@ -126,6 +155,11 @@ onMounted(async () => {
           </el-table>
           <el-empty v-if="joints.length === 0" description="暂无节理组记录" :image-size="60" />
         </el-card>
+
+        <el-card shadow="never">
+          <template #header><strong>修订记录（可回看）</strong></template>
+          <RevisionList :face-id="faceId" />
+        </el-card>
       </div>
 
       <el-card shadow="never">
@@ -143,6 +177,8 @@ onMounted(async () => {
         />
       </el-card>
     </div>
+
+    <ReviseFaceDialog v-if="face" v-model="reviseVisible" :face="face" />
   </div>
 </template>
 

@@ -15,8 +15,15 @@ export const useGradeStore = defineStore('grade', {
   getters: {
     byFace: (state) => (faceId: string) =>
       state.items.filter((it) => it.faceId === faceId).sort((a, b) => b.judgedAt - a.judgedAt),
+    /** 仅「有效」判定：已失效（修订重算中）与待复核的一律不作为现行结论 */
+    confirmedByFace: (state) => (faceId: string) =>
+      state.items
+        .filter((it) => it.faceId === faceId && it.status === 'confirmed')
+        .sort((a, b) => b.judgedAt - a.judgedAt),
     latestByFace: (state) => (faceId: string) =>
-      state.items.filter((it) => it.faceId === faceId).sort((a, b) => b.judgedAt - a.judgedAt)[0],
+      state.items
+        .filter((it) => it.faceId === faceId && it.status === 'confirmed')
+        .sort((a, b) => b.judgedAt - a.judgedAt)[0],
     watersByFace: (state) => (faceId: string) =>
       state.waters.filter((it) => it.faceId === faceId).sort((a, b) => a.chainage - b.chainage),
   },
@@ -33,6 +40,11 @@ export const useGradeStore = defineStore('grade', {
       await db.grades.put(toPlain(record));
       this.items = [record, ...this.items];
       return record;
+    },
+    /** 待复核判定人工复核后确认为有效 */
+    async confirmReview(id: string) {
+      await db.grades.update(id, { status: 'confirmed' });
+      this.items = this.items.map((it) => (it.id === id ? { ...it, status: 'confirmed' as const } : it));
     },
     async addWater(draft: WaterInflowDraft) {
       const record: WaterInflow = { ...toPlain(draft), id: newId('water'), measuredAt: Date.now() };

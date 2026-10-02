@@ -10,6 +10,8 @@ defineProps<{
   jointCount?: number;
   waterCount?: number;
   footer?: string;
+  /** 修订重算中：停用旧级别展示 */
+  recalculating?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -21,8 +23,10 @@ const emit = defineEmits<{
   <el-card class="face-card" shadow="hover" @click="emit('open', face.id)">
     <div class="row">
       <strong>{{ face.faceNo }}</strong>
-      <GradeTag :grade="grade" />
+      <el-tag v-if="recalculating" type="warning" size="small">重算中</el-tag>
+      <GradeTag v-else :grade="grade" />
       <el-tag size="small" effect="plain">{{ face.excavationMethod }}</el-tag>
+      <el-tag size="small" effect="plain" type="info">R{{ face.revision }}</el-tag>
     </div>
     <div class="line">
       桩号 {{ formatChainage(face.chainage) }} · 编录区间
