@@ -4,27 +4,38 @@ import { useRoute, useRouter } from 'vue-router';
 import { useFaceStore } from '../stores/faceStore';
 import { useGradeStore } from '../stores/gradeStore';
 import { useJointStore } from '../stores/jointStore';
+import { useRevisionStore } from '../stores/revisionStore';
 import { useGradeCalc } from '../hooks/useGradeCalc';
 import SketchCanvas from '../components/common/SketchCanvas.vue';
 import GradeTag from '../components/common/GradeTag.vue';
+import FaceEditDialog from '../components/common/FaceEditDialog.vue';
 import { attitudeText, formatChainage } from '../utils/geoMath';
-import { GRADE_SUPPORT } from '../types/grade';
+import { GRADE_SUPPORT, type GradeStatus } from '../types/grade';
+import type { RevisionStatus } from '../types/revision';
 
 const route = useRoute();
 const router = useRouter();
 const faceStore = useFaceStore();
 const jointStore = useJointStore();
 const gradeStore = useGradeStore();
+const revisionStore = useRevisionStore();
 
 const faceId = computed(() => String(route.params.id ?? ''));
 const face = computed(() => faceStore.byId(faceId.value));
 const joints = computed(() => jointStore.byFace(faceId.value));
-const grades = computed(() => gradeStore.byFace(faceId.value));
-const latest = computed(() => grades.value[0]);
-const previousGrade = computed(() => grades.value[1]);
+const revisions = computed(() => revisionStore.byFace(faceId.value));
+const activeRevision = computed(() => revisionStore.activeByFace(faceId.value));
+
+/** 现行判定（重算完成前不返回旧值） */
+const latest = computed(() => gradeStore.latestByFace(faceId.value));
+const currentGrades = computed(() =>
+  gradeStore.byFace(faceId.value).filter((g) => g.status === 'current'),
+);
+const previousGrade = computed(() => currentGrades.value[1]);
 
 const { result, patch } = useGradeCalc(() => joints.value);
 const segmentCount = ref(0);
+const editDialogVisible = ref(false);
 
 /** SketchCanvas 变更回调（用命名函数避免模板内联箭头参数丢类型） */
 function onSketchChange(segs: { id: string }[]): void {
@@ -33,6 +44,7 @@ function onSketchChange(segs: { id: string }[]): void {
 
 /** 与上循环级别比对结论 */
 const gradeCompare = computed(() => {
+  if (activeRevision.value) return '正在重新判定，完成后更新比对结论';
   if (!latest.value) return '本掌子面尚无级别判定记录';
   if (!previousGrade.value) return `本掌子面首次判定为 ${latest.value.grade} 级围岩`;
   const order = ['Ⅰ', 'Ⅱ', 'Ⅲ', 'Ⅳ', 'Ⅴ', 'Ⅵ'];
@@ -43,10 +55,25 @@ const gradeCompare = computed(() => {
     : `较上一循环变好 ${-delta} 级：${previousGrade.value.grade} → ${latest.value.grade}`;
 });
 
+const revisionStatusTag: Record<RevisionStatus, { label: string; type: '' | 'success' | 'warning' | 'danger' | 'info' }> = {
+  pending: { label: '待重算', type: 'warning' },
+  recalculating: { label: '重算中', type: 'warning' },
+  succeeded: { label: '已完成', type: 'success' },
+  failed: { label: '重算失败', type: 'danger' },
+};
+
+const gradeStatusLabel: Record<GradeStatus, string> = {
+  current: '现行',
+  stale: '已失效',
+  superseded: '已取代',
+  pending_review: '待复核',
+};
+
 onMounted(async () => {
   await faceStore.load();
   await jointStore.load();
   await gradeStore.load();
+  await revisionStore.load();
   if (face.value) {
     patch({ rockStrength: face.value.rockStrength, spanWidth: Number(face.value.faceSize.split('×')[0]) || 12 });
   }
@@ -57,17 +84,41 @@ onMounted(async () => {
   <div class="page">
     <div class="header">
       <h2>掌子面详情 · {{ face?.faceNo ?? '未找到' }}</h2>
-      <GradeTag v-if="latest" :grade="latest.grade" />
+      <el-tag v-if="face" type="info" effect="plain">修订 R{{ face.revisionNo ?? 1 }}</el-tag>
+      <GradeTag v-if="latest && !activeRevision" :grade="latest.grade" />
+      <el-tag v-else-if="activeRevision" type="warning" effect="dark">重算中</el-tag>
       <el-tag v-else type="info">未判定级别</el-tag>
       <el-tag type="info" effect="plain">节理 {{ joints.length }} 组</el-tag>
       <div class="spacer" />
-      <el-button type="primary" @click="router.push(`/faces/${faceId}/joints`)">节理录入</el-button>
+      <el-button type="primary" @click="editDialogVisible = true">修订编录</el-button>
+      <el-button @click="router.push(`/faces/${faceId}/joints`)">节理录入</el-button>
       <el-button @click="router.push(`/faces/${faceId}/water`)">涌水记录</el-button>
       <el-button @click="router.push(`/grade/${faceId}`)">围岩级别判定</el-button>
       <el-button @click="router.push('/faces')">返回台账</el-button>
     </div>
 
     <el-alert v-if="!face" type="warning" :closable="false" show-icon title="未找到该掌子面（可能已被删除）" />
+
+    <!-- 重算中 / 失败回滚提示 -->
+    <el-alert
+      v-if="activeRevision"
+      type="warning"
+      :closable="false"
+      show-icon
+      title="修订重算中：关联判定已失效，详情、台账与支护建议暂停使用旧值"
+      :description="`修订 R${activeRevision.revisionNo} 正在重新计算围岩级别，完成后自动更新。`"
+      style="margin-bottom: 4px"
+    />
+    <el-alert
+      v-for="r in revisions.filter((x) => x.status === 'failed')"
+      :key="r.id"
+      type="error"
+      :closable="false"
+      show-icon
+      :title="`修订 R${r.revisionNo} 重算失败，已回滚到修订前编录`"
+      :description="`原因：${r.failReason ?? '未知'}。可在下方修订记录中重试。`"
+      style="margin-bottom: 4px"
+    />
 
     <div v-if="face" class="grid">
       <div class="left">
@@ -95,7 +146,12 @@ onMounted(async () => {
 
         <el-card shadow="never">
           <template #header><strong>级别与支护</strong></template>
-          <div v-if="latest" class="grade-box">
+          <div v-if="activeRevision" class="grade-box">
+            <el-tag type="warning" effect="dark">重算中</el-tag>
+            <p class="muted">修订 R{{ activeRevision.revisionNo }} 提交后关联判定立即失效，正在重新计算…</p>
+            <el-button size="small" :loading="true" disabled>正在重算</el-button>
+          </div>
+          <div v-else-if="latest" class="grade-box">
             <GradeTag :grade="latest.grade" />
             <span class="muted">[BQ] = {{ latest.correctedBq }}（BQ {{ latest.bqValue }}，修正 {{ latest.correction }}）</span>
             <p class="support">{{ latest.supportSuggestion || GRADE_SUPPORT[latest.grade] }}</p>
@@ -126,6 +182,90 @@ onMounted(async () => {
           </el-table>
           <el-empty v-if="joints.length === 0" description="暂无节理组记录" :image-size="60" />
         </el-card>
+
+        <el-card shadow="never">
+          <template #header>
+            <div class="card-head">
+              <strong>修订记录</strong>
+              <span class="muted">提交前可回看受影响节理、涌水与判定</span>
+            </div>
+          </template>
+          <el-table :data="revisions" size="small" border>
+            <el-table-column label="修订号" width="80">
+              <template #default="{ row }">R{{ row.revisionNo }}</template>
+            </el-table-column>
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag :type="revisionStatusTag[row.status as RevisionStatus].type" size="small">
+                  {{ revisionStatusTag[row.status as RevisionStatus].label }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="提交时间" width="170">
+              <template #default="{ row }">{{ new Date(row.submittedAt).toLocaleString('zh-CN') }}</template>
+            </el-table-column>
+            <el-table-column label="提交人" width="100">
+              <template #default="{ row }">{{ row.submittedBy }}</template>
+            </el-table-column>
+            <el-table-column label="受影响" min-width="180">
+              <template #default="{ row }">
+                节理 {{ row.affectedJointIds.length }} · 涌水 {{ row.affectedWaterIds.length }} · 判定 {{ row.affectedGradeIds.length }}
+              </template>
+            </el-table-column>
+            <el-table-column label="失败原因" min-width="160">
+              <template #default="{ row }">
+                <span v-if="row.status === 'failed'" class="fail-reason">{{ row.failReason }}</span>
+                <span v-else class="muted">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="150">
+              <template #default="{ row }">
+                <el-button
+                  v-if="row.status === 'failed'"
+                  size="small"
+                  type="primary"
+                  @click="revisionStore.retry(row.id)"
+                >
+                  重试
+                </el-button>
+                <el-button
+                  v-if="row.status === 'failed' || row.status === 'succeeded'"
+                  size="small"
+                  @click="revisionStore.discard(row.id)"
+                >
+                  清理
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-if="revisions.length === 0" description="暂无修订记录" :image-size="60" />
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header><strong>判定状态一览</strong></template>
+          <el-table :data="gradeStore.byFace(faceId)" size="small" border>
+            <el-table-column label="时间" width="170">
+              <template #default="{ row }">{{ new Date(row.judgedAt).toLocaleString('zh-CN') }}</template>
+            </el-table-column>
+            <el-table-column label="级别" width="90">
+              <template #default="{ row }"><GradeTag :grade="row.grade" /></template>
+            </el-table-column>
+            <el-table-column prop="correctedBq" label="[BQ]" width="90" />
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag :type="row.status === 'current' ? 'success' : row.status === 'pending_review' ? 'danger' : 'info'" size="small">
+                  {{ gradeStatusLabel[row.status as GradeStatus] }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="来源修订" width="90">
+              <template #default="{ row }">
+                <span v-if="row.revisionId" class="muted">R{{ revisions.find((r) => r.id === row.revisionId)?.revisionNo ?? '?' }}</span>
+                <span v-else class="muted">原始</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
       </div>
 
       <el-card shadow="never">
@@ -143,6 +283,8 @@ onMounted(async () => {
         />
       </el-card>
     </div>
+
+    <FaceEditDialog v-model="editDialogVisible" :face="face" />
   </div>
 </template>
 
@@ -194,5 +336,9 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+.fail-reason {
+  color: #d3542f;
+  font-size: 12px;
 }
 </style>

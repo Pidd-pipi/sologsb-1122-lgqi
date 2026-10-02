@@ -10,6 +10,8 @@ defineProps<{
   jointCount?: number;
   waterCount?: number;
   footer?: string;
+  /** 修订重算中：停用旧级别，显示重算中 */
+  recalculating?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -21,7 +23,8 @@ const emit = defineEmits<{
   <el-card class="face-card" shadow="hover" @click="emit('open', face.id)">
     <div class="row">
       <strong>{{ face.faceNo }}</strong>
-      <GradeTag :grade="grade" />
+      <el-tag v-if="recalculating" type="warning" size="small" effect="dark">重算中</el-tag>
+      <GradeTag v-else :grade="grade" />
       <el-tag size="small" effect="plain">{{ face.excavationMethod }}</el-tag>
     </div>
     <div class="line">

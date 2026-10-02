@@ -3,6 +3,15 @@ export type RockGrade = 'Ⅰ' | 'Ⅱ' | 'Ⅲ' | 'Ⅳ' | 'Ⅴ' | 'Ⅵ';
 
 export const ROCK_GRADES: RockGrade[] = ['Ⅰ', 'Ⅱ', 'Ⅲ', 'Ⅳ', 'Ⅴ', 'Ⅵ'];
 
+/**
+ * 判定记录状态：
+ * - current 现行有效
+ * - stale 已被修订判定失效、等待重算（重算完成前停用旧值）
+ * - superseded 已被新判定取代（历史记录）
+ * - pending_review 来源无法对应，待人工复核
+ */
+export type GradeStatus = 'current' | 'stale' | 'superseded' | 'pending_review';
+
 /** 出水状态 */
 export type Groundwater = '干燥' | '潮湿' | '点滴状出水' | '线状出水' | '涌流状出水';
 
@@ -33,9 +42,15 @@ export interface RockMassGrade {
   /** 是否人工修正级别 */
   manualAdjusted: boolean;
   judgedAt: number;
+  /** 记录状态，默认现行 */
+  status: GradeStatus;
+  /** 产生该判定的修订 id（旧数据升级时为空） */
+  revisionId?: string;
 }
 
-export type RockMassGradeDraft = Omit<RockMassGrade, 'id' | 'judgedAt'>;
+export type RockMassGradeDraft = Omit<RockMassGrade, 'id' | 'judgedAt' | 'status'> & {
+  status?: GradeStatus;
+};
 
 /** 级别色带（用于 <GradeTag>） */
 export const GRADE_COLOR: Record<RockGrade, string> = {

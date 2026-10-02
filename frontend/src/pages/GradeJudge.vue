@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus';
 import { useFaceStore } from '../stores/faceStore';
 import { useGradeStore } from '../stores/gradeStore';
 import { useJointStore } from '../stores/jointStore';
+import { useRevisionStore } from '../stores/revisionStore';
 import { useGradeCalc } from '../hooks/useGradeCalc';
 import GradeTag from '../components/common/GradeTag.vue';
 import { GROUNDWATERS, GRADE_SUPPORT, ROCK_GRADES, type Groundwater, type RockGrade } from '../types/grade';
@@ -15,12 +16,15 @@ const router = useRouter();
 const faceStore = useFaceStore();
 const gradeStore = useGradeStore();
 const jointStore = useJointStore();
+const revisionStore = useRevisionStore();
 
 const faceId = computed(() => String(route.params.faceId ?? ''));
 const face = computed(() => faceStore.byId(faceId.value));
 const joints = computed(() => jointStore.byFace(faceId.value));
 const history = computed(() => gradeStore.byFace(faceId.value));
 const previous = computed(() => history.value[0]);
+/** 修订重算中：旧级别与支护建议停用 */
+const activeRevision = computed(() => revisionStore.activeByFace(faceId.value));
 
 const { input, result, patch } = useGradeCalc(() => joints.value);
 const manual = ref(false);
@@ -73,6 +77,7 @@ onMounted(async () => {
   await faceStore.load();
   await jointStore.load();
   await gradeStore.load();
+  await revisionStore.load();
   if (face.value) {
     patch({
       rockStrength: face.value.rockStrength,
@@ -86,7 +91,8 @@ onMounted(async () => {
   <div class="page">
     <div class="header">
       <h2>围岩级别判定 · {{ face?.faceNo ?? '未知' }}</h2>
-      <GradeTag :grade="finalGrade" />
+      <el-tag v-if="activeRevision" type="warning" effect="dark">重算中</el-tag>
+      <GradeTag v-else :grade="finalGrade" />
       <el-tag type="info" effect="plain">节理 {{ joints.length }} 组 · 自动 Jv {{ estimateJv(joints) }}</el-tag>
       <div class="spacer" />
       <el-button @click="router.push(`/faces/${faceId}`)">返回掌子面详情</el-button>
@@ -94,6 +100,14 @@ onMounted(async () => {
     </div>
 
     <el-alert v-if="!face" type="warning" :closable="false" show-icon title="未找到该掌子面" />
+    <el-alert
+      v-if="activeRevision"
+      type="warning"
+      :closable="false"
+      show-icon
+      title="修订重算中：关联判定已失效，旧级别与支护建议暂停使用"
+      :description="`修订 R${activeRevision.revisionNo} 正在重新计算，完成后自动更新为现行结论。`"
+    />
 
     <div class="grid">
       <el-card shadow="never">
@@ -133,19 +147,26 @@ onMounted(async () => {
       <div class="right">
         <el-card shadow="never">
           <template #header><strong>实时算得的级别与支护建议</strong></template>
-          <div class="result">
-            <GradeTag :grade="finalGrade" />
-            <span class="muted">BQ = {{ result.bq }} · [BQ] = {{ result.correctedBq }}</span>
-            <el-tag v-if="manual" type="warning" size="small">人工修正</el-tag>
+          <div v-if="activeRevision" class="recalc-box">
+            <el-tag type="warning" effect="dark">重算中</el-tag>
+            <p class="muted">修订 R{{ activeRevision.revisionNo }} 提交后关联判定已失效，正在重新计算围岩级别与支护建议…</p>
+            <el-button size="small" :loading="true" disabled>正在重算</el-button>
           </div>
-          <p class="support">{{ finalSupport }}</p>
-          <el-checkbox v-model="manual">启用人工修正级别</el-checkbox>
-          <el-radio-group v-if="manual" v-model="manualGrade" style="margin-top: 8px">
-            <el-radio-button v-for="g in ROCK_GRADES" :key="g" :value="g">{{ g }}</el-radio-button>
-          </el-radio-group>
-          <el-divider />
-          <p class="muted">{{ compareText }}</p>
-          <el-button type="primary" @click="save">保存判定结果</el-button>
+          <template v-else>
+            <div class="result">
+              <GradeTag :grade="finalGrade" />
+              <span class="muted">BQ = {{ result.bq }} · [BQ] = {{ result.correctedBq }}</span>
+              <el-tag v-if="manual" type="warning" size="small">人工修正</el-tag>
+            </div>
+            <p class="support">{{ finalSupport }}</p>
+            <el-checkbox v-model="manual">启用人工修正级别</el-checkbox>
+            <el-radio-group v-if="manual" v-model="manualGrade" style="margin-top: 8px">
+              <el-radio-button v-for="g in ROCK_GRADES" :key="g" :value="g">{{ g }}</el-radio-button>
+            </el-radio-group>
+            <el-divider />
+            <p class="muted">{{ compareText }}</p>
+            <el-button type="primary" @click="save">保存判定结果</el-button>
+          </template>
         </el-card>
 
         <el-card shadow="never">
@@ -229,6 +250,12 @@ onMounted(async () => {
   align-items: center;
   gap: 10px;
   margin-bottom: 8px;
+}
+.recalc-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
 }
 .support {
   color: #2f3a46;

@@ -39,6 +39,10 @@ export interface TunnelFace {
   attitude: Attitude;
   recordedAt: number;
   geologist: string;
+  /** 修订号（同一掌子面从 1 递增，首次编录为 1） */
+  revisionNo: number;
 }
 
-export type TunnelFaceDraft = Omit<TunnelFace, 'id' | 'recordedAt'>;
+export type TunnelFaceDraft = Omit<TunnelFace, 'id' | 'recordedAt' | 'revisionNo'> & {
+  revisionNo?: number;
+};
